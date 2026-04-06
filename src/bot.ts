@@ -21,42 +21,47 @@ import { initPaperAccount, krakenStatus } from "./modules/execution/index.js";
 import { getMarketData, getPriceHistory } from "./modules/market/index.js";
 import { getStrategy } from "./modules/strategy/loader.js";
 import { calculateRisk } from "./modules/risk/index.js";
-import { openPosition, recoverOpenPositions, getActivePositions } from "./modules/position/index.js";
+import {
+  openPosition,
+  recoverOpenPositions,
+  getActivePositions,
+} from "./modules/position/index.js";
 import { botState } from "./modules/state/index.js";
 import { botRouter } from "./api/routes/bot.js";
 import { logger } from "./utils/logger.js";
 
-const TRADING_PAIR = "XBTUSD";     // Change to ETH/SOL etc. as needed
-const LOOP_INTERVAL_MS = 30_000;   // 30 seconds
+const TRADING_PAIR = "XBTUSD"; // Change to ETH/SOL etc. as needed
+const LOOP_INTERVAL_MS = 30_000; // 30 seconds
 
 function hasOpenPositionForPair(pair: string): boolean {
-  return getActivePositions().some((p) => p.pair === pair && p.status === "open");
+  return getActivePositions().some(
+    (p) => p.pair === pair && p.status === "open",
+  );
 }
 
 async function main(): Promise<void> {
-
-    // ── 2. MongoDB ──────────────────────────────────────────────
-  await connectDB();
-
   // ── 1. Kraken CLI health check ──────────────────────────────
   logger.info("[Boot] Checking Kraken CLI...");
   const alive = await krakenStatus();
   if (!alive) {
     logger.error("[Boot] ❌ Kraken CLI not responding");
     logger.error(`       KRAKEN_BINARY_PATH = ${config.krakenBinaryPath}`);
-    logger.error("       In Ubuntu WSL: run  which kraken  to find the correct path");
+    logger.error(
+      "       In Ubuntu WSL: run  which kraken  to find the correct path",
+    );
     process.exit(1);
   }
   logger.info("[Boot] ✅ Kraken CLI OK");
 
-
+  // ── 2. MongoDB ──────────────────────────────────────────────
+  await connectDB();
 
   // ── 3. Express + Socket.io ──────────────────────────────────
   const app = express();
   app.use(cors({ origin: config.frontendUrl, credentials: true }));
   app.use(express.json());
   app.use("/api", botRouter);
-  app.get("/health", (_req, res) => res.json({ ok: true, uptime: process.uptime() }));
+  app.get("/", (_req, res) => res.json({ ok: true, uptime: process.uptime() }));
 
   const httpServer = createServer(app);
   const io = new IOServer(httpServer, {
@@ -70,10 +75,16 @@ async function main(): Promise<void> {
     // Push current status to newly connected client immediately
     socket.emit("aegis_event", {
       type: "BOT_STATUS",
-      payload: { running: botState.running, mode: botState.mode, strategy: botState.strategy },
+      payload: {
+        running: botState.running,
+        mode: botState.mode,
+        strategy: botState.strategy,
+      },
       timestamp: Date.now(),
     });
-    socket.on("disconnect", () => logger.info(`[WS] Client disconnected: ${socket.id}`));
+    socket.on("disconnect", () =>
+      logger.info(`[WS] Client disconnected: ${socket.id}`),
+    );
   });
 
   httpServer.listen(config.port, () => {
@@ -82,10 +93,10 @@ async function main(): Promise<void> {
   });
 
   // ── 4. Paper mode ───────────────────────────────────────────
-  if (config.mode === "paper") {
-    await initPaperAccount(10_000);
-    logger.info("[Boot] ✅ Paper account ($10,000)");
-  }
+  // if (config.mode === "paper") {
+  //   await initPaperAccount(10_000);
+  //   logger.info("[Boot] ✅ Paper account ($10,000)");
+  // }
 
   // ── 5. Crash recovery ───────────────────────────────────────
   await recoverOpenPositions();
@@ -108,7 +119,9 @@ async function main(): Promise<void> {
     try {
       // Skip if already holding a position in this pair
       if (hasOpenPositionForPair(TRADING_PAIR)) {
-        logger.debug(`[Loop] Position already open for ${TRADING_PAIR} — skipping`);
+        logger.debug(
+          `[Loop] Position already open for ${TRADING_PAIR} — skipping`,
+        );
         return;
       }
 
@@ -124,7 +137,9 @@ async function main(): Promise<void> {
       });
 
       emit("STRATEGY_SIGNAL", signal);
-      logger.info(`[Strategy] ${signal.action} ${(signal.confidence * 100).toFixed(0)}% — ${signal.reason}`);
+      logger.info(
+        `[Strategy] ${signal.action} ${(signal.confidence * 100).toFixed(0)}% — ${signal.reason}`,
+      );
 
       if (signal.action === "HOLD" || signal.confidence < 0.3) return;
 
@@ -153,7 +168,6 @@ async function main(): Promise<void> {
         strategy: botState.strategy,
         entryPrice: market.price,
       });
-
     } catch (err) {
       logger.error(`[Loop] Error: ${err}`);
       emit("ERROR", { message: String(err) });
