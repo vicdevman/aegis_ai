@@ -1,4 +1,5 @@
 import type { StrategyInput, StrategyOutput } from "../../types/index.js";
+import { logger } from "../../utils/logger.js";
 
 const LOOKBACK = 20;
 const THRESHOLD = 0.015;
@@ -6,6 +7,8 @@ const THRESHOLD = 0.015;
 export async function meanReversion(input: StrategyInput): Promise<StrategyOutput> {
   const { marketData, priceHistory } = input;
   const { pair, price } = marketData;
+
+  // logger.info({ marketData, priceHistory })
 
   if (priceHistory.length < LOOKBACK) {
     return { action: "HOLD", confidence: 0, pair, reason: `Warming up (${priceHistory.length}/${LOOKBACK})` };

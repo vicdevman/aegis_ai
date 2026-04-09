@@ -39,7 +39,10 @@ export async function openPosition(params: {
 
   active.set(pos.id, pos);
   await PositionModel.create(pos);
-  emit("TRADE_OPENED", pos);
+  emit("TRADE_OPENED", {
+    message: `New ${direction.toUpperCase()} position opened for ${pair} at $${entryPrice.toFixed(2)}. Position size: $${risk.positionSizeUSD.toFixed(2)} (${risk.volume.toFixed(6)} units). Stop-loss: $${risk.stopLoss.toFixed(2)}, Take-profit: $${risk.takeProfit.toFixed(2)}.`,
+    position: pos
+  });
   logger.info(`[Position] Opened: ${direction.toUpperCase()} ${pair} @ ${entryPrice} | ${pos.id}`);
   startWatcher(pos);
   return pos;
@@ -60,7 +63,18 @@ export async function closePosition(id: string, price: number, reason: CloseReas
   await PositionModel.findOneAndUpdate({ id }, pos);
   recordPnL(pnl);
   stopWatcher(id);
-  emit("TRADE_CLOSED", { position: pos, reason, pnl, pnlPct: pct });
+  
+  const pnlEmoji = pnl >= 0 ? '🟢' : '🔴';
+  const pnlWord = pnl >= 0 ? 'profit' : 'loss';
+  
+  emit("TRADE_CLOSED", { 
+    message: `${pos.pair} position closed due to ${reason.replace(/_/g, ' ').toLowerCase()}. Final ${pnlWord}: $${Math.abs(pnl).toFixed(2)} (${pct.toFixed(2)}%) ${pnlEmoji}`,
+    position: pos, 
+    reason, 
+    pnl, 
+    pnlPct: pct,
+    summary: `Trade completed with ${pnlWord} of $${Math.abs(pnl).toFixed(2)}`
+  });
   logger.info(`[Position] Closed: ${pos.pair} | ${reason} | PnL $${pnl.toFixed(2)} (${pct.toFixed(2)}%)`);
 }
 
@@ -70,16 +84,29 @@ export function moveStopLossToBreakEven(id: string, entryPrice: number): void {
   pos.stopLoss = entryPrice;
   pos.stopLossAdjusted = true;
   PositionModel.findOneAndUpdate({ id }, { stopLoss: entryPrice, stopLossAdjusted: true }).catch(() => {});
-  emit("POSITION_UPDATE", { id, stopLoss: entryPrice, reason: "BREAK_EVEN_MOVE" });
+  emit("POSITION_UPDATE", { 
+    message: `Stop-loss moved to break-even ($${entryPrice.toFixed(2)}) for position ${id.slice(0, 8)}... Position is now risk-free!`,
+    id, 
+    stopLoss: entryPrice, 
+    reason: "BREAK_EVEN_MOVE",
+    type: 'break_even'
+  });
   logger.info(`[Position] Break-even move: ${id}`);
 }
 
 export async function recoverOpenPositions(): Promise<void> {
-  const docs = await PositionModel.find({ status: "open" }).lean();
+  const docs = await PositionModel.find({ status: "open" }).lean() as Array<unknown>;
   for (const doc of docs) {
     const pos = doc as unknown as Position;
     active.set(pos.id, pos);
     startWatcher(pos);
   }
-  if (docs.length) logger.info(`[Position] Recovered ${docs.length} open positions`);
+  if (docs.length) {
+    logger.info(`[Position] Recovered ${docs.length} open positions`);
+    emit("SYSTEM_MESSAGE", {
+      message: `Recovered ${docs.length} open position(s) from database. Positions are being monitored for stop-loss/take-profit.`,
+      type: 'recovery',
+      count: docs.length
+    });
+  }
 }

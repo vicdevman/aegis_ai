@@ -11,8 +11,14 @@ export function recordPnL(pnl: number): void {
 export function getDailyPnL(): number { return dailyPnL; }
 export function resetDailyPnL(): void { dailyPnL = 0; }
 
-export function calculateRisk(input: RiskInput): RiskOutput {
-  const { entryPrice, direction, pair, availableBalance } = input;
+// Extended input type that accepts AI‑provided SL/TP percentages
+interface ExtendedRiskInput extends RiskInput {
+  aiStopLossPct?: number;
+  aiTakeProfitPct?: number;
+}
+
+export function calculateRisk(input: ExtendedRiskInput): RiskOutput {
+  const { entryPrice, direction, pair, availableBalance, aiStopLossPct, aiTakeProfitPct } = input;
   const risk = config.risk;
 
   if (dailyPnL <= -Math.abs(risk.dailyLossLimitUSD)) {
@@ -28,13 +34,17 @@ export function calculateRisk(input: RiskInput): RiskOutput {
   const volume = positionSizeUSD / entryPrice;
   let stopLoss: number, takeProfit: number, breakEvenTrigger: number | undefined;
 
+  // Use AI‑provided percentages if given, otherwise fallback to config defaults
+  const stopLossPct = aiStopLossPct ?? risk.stopLossPct;
+  const takeProfitPct = aiTakeProfitPct ?? risk.takeProfitPct;
+
   if (direction === "buy") {
-    stopLoss         = entryPrice * (1 - risk.stopLossPct);
-    takeProfit       = entryPrice * (1 + risk.takeProfitPct);
+    stopLoss         = entryPrice * (1 - stopLossPct);
+    takeProfit       = entryPrice * (1 + takeProfitPct);
     breakEvenTrigger = entryPrice * (1 + risk.breakEvenTriggerPct);
   } else {
-    stopLoss         = entryPrice * (1 + risk.stopLossPct);
-    takeProfit       = entryPrice * (1 - risk.takeProfitPct);
+    stopLoss         = entryPrice * (1 + stopLossPct);
+    takeProfit       = entryPrice * (1 - takeProfitPct);
     breakEvenTrigger = entryPrice * (1 - risk.breakEvenTriggerPct);
   }
 

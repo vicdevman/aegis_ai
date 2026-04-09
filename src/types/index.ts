@@ -90,9 +90,11 @@ export type AegisEventType =
   | "TRADE_OPENED"
   | "TRADE_CLOSED"
   | "POSITION_UPDATE"
+  | "PORTFOLIO_UPDATE"
   | "BOT_STATUS"
   | "ERROR"
-  | "LOG";
+  | "LOG"
+  | "SYSTEM_MESSAGE";
 
 export interface AegisEvent<T = unknown> {
   type: AegisEventType;
@@ -133,20 +135,31 @@ export interface KrakenOrderResponse {
 }
 
 export interface KrakenBalanceResponse {
-  [currency: string]: string;
+  balances: {
+    [currency: string]: {
+      total: number | string;
+      free?: number | string;
+      used?: number | string;
+    } | string;
+  };
 }
 
 // ── Config ───────────────────────────────────────────────────
 export interface AegisConfig {
   krakenBinaryPath: string;
+  devMode: boolean;
   krakenApiKey: string;
   krakenApiSecret: string;
   mode: "paper" | "live";
   mongodbUri: string;
+  groqApiKey: string;
   prismApiKey?: string;
   port: number;
   frontendUrl: string;
   activeStrategy: string;
+  operatorPrivateKey:string;
+  agentPrivateKey:string;
+  CurrentModel:string;
   risk: {
     maxPositionSizeUSD: number;
     dailyLossLimitUSD: number;
@@ -154,4 +167,18 @@ export interface AegisConfig {
     takeProfitPct: number;
     breakEvenTriggerPct: number;
   };
+}
+
+// ── aiDecision ───────────────────────────────────────────────────
+export interface AIDecision {
+  asset: string;               // e.g., "BTC/USD", "AAPLx/USD"
+  action: 'buy' | 'sell' | 'hold';
+  strategy: 'mean_reversion' | 'breakout' | 'momentum' | 'trend_following';
+  entryPrice: number;          // estimated price (risk module uses it)
+  confidence: number;          // 0-1, averaged across samples
+  stopLossPct: number;         // 0.01 = 1% below entry for long
+  takeProfitPct: number;       // must be > stopLossPct
+  sizeMultiplier: number;      // 0.5 to 2.0, adjusts base position
+  primarySignal: string;       // "RSI_oversold", "volume_breakout", etc.
+  reasoningSummary: string;    // short debug message
 }

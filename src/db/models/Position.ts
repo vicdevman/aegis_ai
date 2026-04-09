@@ -1,4 +1,7 @@
 import mongoose, { Schema } from "mongoose";
+import { config } from "../../config/env.js";
+import { ModelSimulator } from "../simulator.js";
+import type { Position } from "../../types/index.js";
 
 const PositionSchema = new Schema({
   id:                { type: String, required: true, unique: true, index: true },
@@ -22,4 +25,6 @@ const PositionSchema = new Schema({
   pnlPct:            { type: Number },
 }, { timestamps: true });
 
-export const PositionModel = mongoose.model("Position", PositionSchema);
+export const PositionModel = config.devMode 
+  ? new ModelSimulator<Position>("Position") 
+  : mongoose.model("Position", PositionSchema);

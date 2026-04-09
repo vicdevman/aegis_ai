@@ -7,7 +7,7 @@
  *  3. Express + Socket.io server
  *  4. Paper account init (if paper mode)
  *  5. Crash recovery — restore open positions from DB
- *  6. Main trading loop (every 30s, only runs when bot is started)
+ *  6. Main trading loop (every 1 min, only runs when bot is started)
  */
 
 import express from "express";
@@ -17,8 +17,16 @@ import { Server as IOServer } from "socket.io";
 import { config } from "./config/env.js";
 import { connectDB } from "./db/connect.js";
 import { initEvents, emit } from "./modules/events/index.js";
-import { initPaperAccount, krakenStatus } from "./modules/execution/index.js";
-import { getMarketData, getPriceHistory } from "./modules/market/index.js";
+import {
+  initPaperAccount,
+  krakenStatus,
+  getBalance,
+} from "./modules/execution/index.js";
+import {
+  getMarketData,
+  getPriceHistory,
+  updateHistory,
+} from "./modules/market/index.js";
 import { getStrategy } from "./modules/strategy/loader.js";
 import { calculateRisk } from "./modules/risk/index.js";
 import {
@@ -29,14 +37,91 @@ import {
 import { botState } from "./modules/state/index.js";
 import { botRouter } from "./api/routes/bot.js";
 import { logger } from "./utils/logger.js";
+import { getAITrades } from "./ai/index.js";
+import type { AssetSnapshot } from "./ai/types.js";
+import {
+  computeRSI,
+  computeATRPercent,
+  computeTrend,
+} from "./modules/market/index.js";
+import {
+  submitTradeIntent,
+  publicClient,
+  AGENT_WALLET,
+} from "./blockchain/erc8004.js";
 
 const TRADING_PAIR = "XBTUSD"; // Change to ETH/SOL etc. as needed
-const LOOP_INTERVAL_MS = 30_000; // 30 seconds
+const LOOP_INTERVAL_MS = 60_000; // 1 minute (was 30 seconds)
 
 function hasOpenPositionForPair(pair: string): boolean {
   return getActivePositions().some(
     (p) => p.pair === pair && p.status === "open",
   );
+}
+
+// Asset universe – expand as needed
+const TRADING_PAIRS = [
+  { symbol: "XBTUSD", assetClass: "crypto" },
+  // { symbol: "ETHUSD", assetClass: "crypto" },
+  // { symbol: "SOLUSD", assetClass: "crypto" },
+  // { symbol: "AAPLx/USD", assetClass: "tokenized_asset" },  // uncomment if available
+  // { symbol: "NVDAx/USD", assetClass: "tokenized_asset" },
+];
+
+// Store rolling volumes for volume ratio
+const volumeHistory = new Map<string, number[]>();
+const VOLUME_HISTORY_LEN = 20;
+
+async function buildSnapshots(): Promise<AssetSnapshot[]> {
+  const snapshots: AssetSnapshot[] = [];
+  for (const pair of TRADING_PAIRS) {
+    try {
+      const market = await getMarketData(pair.symbol);
+      const price = market.price;
+      const volume24h = market.volume24h || 0;
+
+      // Update volume history
+      let hist = volumeHistory.get(pair.symbol) || [];
+      hist.push(volume24h);
+      if (hist.length > VOLUME_HISTORY_LEN) hist.shift();
+      volumeHistory.set(pair.symbol, hist);
+      const avgVolume = hist.reduce((a, b) => a + b, 0) / (hist.length || 1);
+      const volumeRatio = avgVolume > 0 ? volume24h / avgVolume : 1.0;
+
+      // Compute indicators using your helper functions
+      const rsi14 = computeRSI(pair.symbol);
+      const atrPercent = computeATRPercent(pair.symbol);
+      const trend = computeTrend(pair.symbol);
+
+      // 24h change from price history
+      const prices = getPriceHistory(pair.symbol);
+      let change24h = 0;
+      if (prices.length >= 2) {
+        const oldest = prices[0];
+        const newest = prices[prices.length - 1];
+        change24h = ((newest - oldest) / oldest) * 100;
+      }
+
+      // Log snapshot values for debugging
+      logger.debug(
+        `[SNAPSHOT] ${pair.symbol}: price=${price}, rsi=${rsi14.toFixed(1)}, atr=${atrPercent.toFixed(2)}%, volRatio=${volumeRatio.toFixed(2)}, trend=${trend}, 24hChange=${change24h.toFixed(2)}%`,
+      );
+
+      snapshots.push({
+        asset: pair.symbol,
+        assetClass: pair.assetClass,
+        price,
+        change24h,
+        rsi14,
+        volumeRatio,
+        atrPercent,
+        trend,
+      });
+    } catch (err) {
+      logger.warn(`Failed to build snapshot for ${pair.symbol}: ${err}`);
+    }
+  }
+  return snapshots;
 }
 
 async function main(): Promise<void> {
@@ -56,6 +141,25 @@ async function main(): Promise<void> {
   // ── 2. MongoDB ──────────────────────────────────────────────
   await connectDB();
 
+  // Seed price history with current prices
+  async function seedPriceHistory() {
+    logger.info("[Boot] Seeding price history with current prices...");
+    for (const pair of TRADING_PAIRS) {
+      try {
+        const market = await getMarketData(pair.symbol);
+        const price = market.price;
+        // Fill history with 20 identical prices (no extra API calls)
+        for (let i = 0; i < 20; i++) {
+          updateHistory(pair.symbol, price);
+        }
+        logger.debug(`[Seed] ${pair.symbol} history seeded with ${price}`);
+      } catch (err) {
+        logger.warn(`[Seed] Failed to seed ${pair.symbol}: ${err}`);
+      }
+    }
+    logger.info("[Boot] Price history seeded.");
+  }
+  await seedPriceHistory();
   // ── 3. Express + Socket.io ──────────────────────────────────
   const app = express();
   app.use(cors({ origin: config.frontendUrl, credentials: true }));
@@ -112,64 +216,192 @@ async function main(): Promise<void> {
     strategy: botState.strategy,
   });
 
-  // ── 6. Main trading loop ─────────────────────────────────────
+  // ── 6. Main trading loop (RiskRouter integrated) ─────────────
   setInterval(async () => {
-    if (!botState.running) return;
+    logger.debug("[LOOP] 🔁 Tick start");
+    logger.debug(`[LOOP] botState.running = ${botState.running}`);
+
+    if (!botState.running) {
+      logger.debug("[LOOP] Bot not running, skipping");
+      return;
+    }
 
     try {
-      // Skip if already holding a position in this pair
-      if (hasOpenPositionForPair(TRADING_PAIR)) {
-        logger.debug(
-          `[Loop] Position already open for ${TRADING_PAIR} — skipping`,
+      // ── 1. Build snapshots for all assets ─────────────────────
+      logger.debug("[LOOP] Building snapshots...");
+      const snapshots = await buildSnapshots();
+      logger.debug(`[LOOP] Built ${snapshots.length} snapshots`);
+
+      if (snapshots.length === 0) {
+        logger.warn("[LOOP] No snapshots, skipping");
+        return;
+      }
+
+      // Emit market update with user-friendly summary
+      const marketSummary = snapshots
+        .map(
+          (s) =>
+            `${s.asset}: $${s.price.toFixed(2)} (${s.change24h >= 0 ? "+" : ""}${s.change24h.toFixed(2)}%) - RSI: ${s.rsi14.toFixed(1)}`,
+        )
+        .join("; ");
+
+      emit("MARKET_UPDATE", {
+        message: `Market data received for ${snapshots.length} assets. ${marketSummary}`,
+        snapshots,
+        summary: marketSummary,
+      });
+
+      // ── 2. Portfolio value from Kraken ──────────────
+      const balances = await getBalance();
+      const usdEntry = balances.balances?.USD;
+      const zusdEntry = balances.balances?.ZUSD;
+
+      const rawTotal =
+        (typeof usdEntry === "object" ? usdEntry.total : usdEntry) ||
+        (typeof zusdEntry === "object" ? zusdEntry.total : zusdEntry) ||
+        1000;
+
+      const portfolioValue =
+        typeof rawTotal === "number" ? rawTotal : parseFloat(rawTotal);
+      logger.debug(`[LOOP] Portfolio value: $${portfolioValue.toFixed(2)}`);
+
+// Build summary string from the nested balances object
+const balancesObj = balances.balances || {};
+const summary = Object.entries(balancesObj)
+  .map(([currency, data]) => {
+    const totalAmt = typeof data === "object" ? data.total : data;
+    return `${typeof totalAmt === "number" ? totalAmt.toFixed(4) : totalAmt} ${currency}`;
+  })
+  .join(", ") || "No balance data";
+
+emit("PORTFOLIO_UPDATE", {
+  message: `Portfolio balance updated: $${portfolioValue.toFixed(2)} USD`,
+  balance: portfolioValue,
+  currencies: balancesObj,
+  summary,
+});
+
+      // ── 3. Get AI trade recommendations ────────────────────────
+      emit("SYSTEM_MESSAGE", {
+        message: `AI is analyzing ${snapshots.length} markets for trading opportunities...`,
+        type: "info",
+      });
+
+      const trades = await getAITrades(snapshots, portfolioValue);
+
+      if (trades.length === 0) {
+        emit("SYSTEM_MESSAGE", {
+          message: `No trading opportunities detected this cycle. Markets are quiet or no consensus reached.`,
+          type: "info",
+        });
+      } else {
+        emit("SYSTEM_MESSAGE", {
+          message: `AI identified ${trades.length} potential trade(s) for execution.`,
+          type: "opportunity",
+          count: trades.length,
+        });
+      }
+
+      // ── 4. Execute each trade via RiskRouter first ─────────────
+      for (const trade of trades) {
+        logger.info(
+          `[AI TRADE] ${trade.direction} ${trade.pair} | conf: ${trade.confidence.toFixed(2)} | ${trade.reasoning}`,
         );
-        return;
+
+        if (hasOpenPositionForPair(trade.pair)) {
+          emit("SYSTEM_MESSAGE", {
+            message: `Skipping ${trade.pair} trade - position already open for this asset.`,
+            type: "skip",
+            pair: trade.pair,
+            reason: "Position already exists",
+          });
+          continue;
+        }
+
+        // --- 4a. Submit trade intent to RiskRouter (on-chain) ---
+        const amountUsd = trade.volume * trade.entryPrice;
+        if (amountUsd <= 0) {
+          emit("ERROR", {
+            message: `Invalid trade amount $${amountUsd.toFixed(2)} for ${trade.pair}. Trade skipped.`,
+          });
+          continue;
+        }
+
+        emit("SYSTEM_MESSAGE", {
+          message: `Submitting ${trade.direction.toUpperCase()} trade for ${trade.pair} worth $${amountUsd.toFixed(2)} to RiskRouter for approval...`,
+          type: "submitting",
+          pair: trade.pair,
+          direction: trade.direction,
+          amount: amountUsd,
+        });
+
+        const txHash = await submitTradeIntent(
+          trade.pair,
+          trade.direction === "buy" ? "BUY" : "SELL",
+          amountUsd,
+          100, // 1% slippage
+          300, // 5 min deadline
+        );
+
+        if (!txHash) {
+          emit("ERROR", {
+            message: `RiskRouter rejected the ${trade.direction.toUpperCase()} trade for ${trade.pair}. Trade will not be executed.`,
+          });
+          continue;
+        }
+
+        emit("SYSTEM_MESSAGE", {
+          message: `RiskRouter approved ${trade.direction.toUpperCase()} ${trade.pair} trade! Transaction hash: ${txHash.slice(0, 20)}...`,
+          type: "approved",
+          pair: trade.pair,
+          txHash: txHash,
+        });
+
+        // Short pause for on-chain confirmation
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+
+        // --- 4b. Open local position for watcher & PnL tracking ---
+        emit("SYSTEM_MESSAGE", {
+          message: `Opening ${trade.direction.toUpperCase()} position for ${trade.pair} at $${trade.entryPrice.toFixed(2)} with stop-loss at $${trade.stopLoss.toFixed(2)} and take-profit at $${trade.takeProfit.toFixed(2)}.`,
+          type: "opening",
+          pair: trade.pair,
+          direction: trade.direction,
+          entryPrice: trade.entryPrice,
+          stopLoss: trade.stopLoss,
+          takeProfit: trade.takeProfit,
+        });
+
+        const riskForPosition = {
+          approved: true,
+          reason: "AI approved + on-chain approved",
+          positionSizeUSD: amountUsd,
+          volume: trade.volume,
+          stopLoss: trade.stopLoss,
+          takeProfit: trade.takeProfit,
+          breakEvenTrigger: trade.breakEvenTrigger,
+        };
+
+        await openPosition({
+          pair: trade.pair,
+          direction:
+            trade.direction as import("./types/index.js").PositionDirection,
+          risk: riskForPosition,
+          strategy: "ai_consensus",
+          entryPrice: trade.entryPrice,
+        });
+
+        emit("SYSTEM_MESSAGE", {
+          message: `Position opened successfully! Monitoring ${trade.pair} for stop-loss at $${trade.stopLoss.toFixed(2)} or take-profit at $${trade.takeProfit.toFixed(2)}.`,
+          type: "opened",
+          pair: trade.pair,
+        });
       }
-
-      // a) Price + enriched signal
-      const market = await getMarketData(TRADING_PAIR);
-      emit("MARKET_UPDATE", market);
-
-      // b) Strategy evaluation
-      const stratFn = getStrategy(botState.strategy);
-      const signal = await stratFn({
-        marketData: market,
-        priceHistory: getPriceHistory(TRADING_PAIR),
-      });
-
-      emit("STRATEGY_SIGNAL", signal);
-      logger.info(
-        `[Strategy] ${signal.action} ${(signal.confidence * 100).toFixed(0)}% — ${signal.reason}`,
-      );
-
-      if (signal.action === "HOLD" || signal.confidence < 0.3) return;
-
-      // c) Risk evaluation
-      const direction = signal.action === "BUY" ? "buy" : "sell";
-      const risk = calculateRisk({
-        entryPrice: market.price,
-        direction,
-        pair: TRADING_PAIR,
-        availableBalance: 10_000, // TODO: wire up getBalance() for live mode
-      });
-
-      if (!risk.approved) {
-        emit("RISK_REJECTED", { reason: risk.reason });
-        logger.warn(`[Risk] REJECTED — ${risk.reason}`);
-        return;
-      }
-
-      emit("RISK_APPROVED", risk);
-
-      // d) Execute + start watcher
-      await openPosition({
-        pair: TRADING_PAIR,
-        direction,
-        risk,
-        strategy: botState.strategy,
-        entryPrice: market.price,
-      });
     } catch (err) {
-      logger.error(`[Loop] Error: ${err}`);
+      logger.error(
+        `[LOOP] ❌ Error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      if (err instanceof Error && err.stack)
+        logger.error(`[LOOP] Stack: ${err.stack}`);
       emit("ERROR", { message: String(err) });
     }
   }, LOOP_INTERVAL_MS);
