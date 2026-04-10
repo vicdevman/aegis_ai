@@ -53,17 +53,16 @@ import {
 const TRADING_PAIR = "XBTUSD"; // Change to ETH/SOL etc. as needed
 const LOOP_INTERVAL_MS = 60_000; // 1 minute (was 30 seconds)
 
-function hasOpenPositionForPair(pair: string): boolean {
-  return getActivePositions().some(
-    (p) => p.pair === pair && p.status === "open",
-  );
+async function hasOpenPositionForPair(pair: string): Promise<boolean> {
+  const activePositions = await getActivePositions();
+  return activePositions.some((p) => p.pair === pair && p.status === "open");
 }
 
 // Asset universe – expand as needed
 const TRADING_PAIRS = [
-  { symbol: "XBTUSD", assetClass: "crypto" },
+  // { symbol: "XBTUSD", assetClass: "crypto" },
   // { symbol: "ETHUSD", assetClass: "crypto" },
-  // { symbol: "SOLUSD", assetClass: "crypto" },
+  { symbol: "SOLUSD", assetClass: "crypto" },
   // { symbol: "AAPLx/USD", assetClass: "tokenized_asset" },  // uncomment if available
   // { symbol: "NVDAx/USD", assetClass: "tokenized_asset" },
 ];
@@ -73,8 +72,18 @@ const volumeHistory = new Map<string, number[]>();
 const VOLUME_HISTORY_LEN = 20;
 
 async function buildSnapshots(): Promise<AssetSnapshot[]> {
-  const snapshots: AssetSnapshot[] = [];
+  const activePositions = await getActivePositions();
+  const openPairs = new Set(
+    activePositions
+      .filter((p) => p.status === "open")
+      .map((p) => p.pair),
+  );
+  const snapshots = [];
   for (const pair of TRADING_PAIRS) {
+    if (openPairs.has(pair.symbol)) {
+      logger.debug(`[SNAPSHOT] Skipping ${pair.symbol} – already in position`);
+      continue;
+    }
     try {
       const market = await getMarketData(pair.symbol);
       const price = market.price;
@@ -265,21 +274,22 @@ async function main(): Promise<void> {
         typeof rawTotal === "number" ? rawTotal : parseFloat(rawTotal);
       logger.debug(`[LOOP] Portfolio value: $${portfolioValue.toFixed(2)}`);
 
-// Build summary string from the nested balances object
-const balancesObj = balances.balances || {};
-const summary = Object.entries(balancesObj)
-  .map(([currency, data]) => {
-    const totalAmt = typeof data === "object" ? data.total : data;
-    return `${typeof totalAmt === "number" ? totalAmt.toFixed(4) : totalAmt} ${currency}`;
-  })
-  .join(", ") || "No balance data";
+      // Build summary string from the nested balances object
+      const balancesObj = balances.balances || {};
+      const summary =
+        Object.entries(balancesObj)
+          .map(([currency, data]) => {
+            const totalAmt = typeof data === "object" ? data.total : data;
+            return `${typeof totalAmt === "number" ? totalAmt.toFixed(4) : totalAmt} ${currency}`;
+          })
+          .join(", ") || "No balance data";
 
-emit("PORTFOLIO_UPDATE", {
-  message: `Portfolio balance updated: $${portfolioValue.toFixed(2)} USD`,
-  balance: portfolioValue,
-  currencies: balancesObj,
-  summary,
-});
+      emit("PORTFOLIO_UPDATE", {
+        message: `Portfolio balance updated: $${portfolioValue.toFixed(2)} USD`,
+        balance: portfolioValue,
+        currencies: balancesObj,
+        summary,
+      });
 
       // ── 3. Get AI trade recommendations ────────────────────────
       emit("SYSTEM_MESSAGE", {
@@ -308,7 +318,7 @@ emit("PORTFOLIO_UPDATE", {
           `[AI TRADE] ${trade.direction} ${trade.pair} | conf: ${trade.confidence.toFixed(2)} | ${trade.reasoning}`,
         );
 
-        if (hasOpenPositionForPair(trade.pair)) {
+        if (await hasOpenPositionForPair(trade.pair)) {
           emit("SYSTEM_MESSAGE", {
             message: `Skipping ${trade.pair} trade - position already open for this asset.`,
             type: "skip",

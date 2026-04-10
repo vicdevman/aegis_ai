@@ -1,19 +1,23 @@
-import { getSampledDecisions } from './sampler.js';
-import { buildPrompt } from './promptbuilder.js';
-import { AssetSnapshot, AIDecision } from './types.js';
-import { getActivePositions } from '../modules/position/index.js';
-import { calculateRisk } from '../modules/risk/index.js';
-import { logger } from '../utils/logger.js';
+import { getSampledDecisions } from "./sampler.js";
+import { buildPrompt } from "./promptbuilder.js";
+import { AssetSnapshot, AIDecision } from "./types.js";
+import { getActivePositions } from "../modules/position/index.js";
+import { calculateRisk } from "../modules/risk/index.js";
+import { logger } from "../utils/logger.js";
 
-export async function getAITrades(snapshots: AssetSnapshot[], portfolioValue: number) {
-  logger.debug('[AI] 🧠 getAITrades called');
-  const openPositions = getActivePositions().filter(p => p.status === 'open');
+export async function getAITrades(
+  snapshots: AssetSnapshot[],
+  portfolioValue: number,
+) {
+  logger.debug("[AI] 🧠 getAITrades called");
+  const activePositionsRaw = await getActivePositions();
+  const openPositions = activePositionsRaw.filter((p) => p.status === "open");
   const prompt = buildPrompt(snapshots, openPositions, portfolioValue);
   logger.debug(`[AI] Prompt length: ${prompt.length} chars`);
 
   const samples = await getSampledDecisions(prompt);
   if (samples.length === 0 || samples[0].length === 0) {
-    logger.warn('[AI] No valid decisions from AI');
+    logger.warn("[AI] No valid decisions from AI");
     return [];
   }
 
@@ -22,20 +26,22 @@ export async function getAITrades(snapshots: AssetSnapshot[], portfolioValue: nu
   const trades = [];
 
   for (const decision of decisions) {
-    if (decision.action === 'hold') continue;
+    if (decision.action === "hold") continue;
 
     // Find corresponding snapshot (to get current price if needed)
-    const snapshot = snapshots.find(s => s.asset === decision.asset);
+    const snapshot = snapshots.find((s) => s.asset === decision.asset);
     if (!snapshot) {
       logger.warn(`[AI] No snapshot for ${decision.asset}, skipping`);
       continue;
     }
 
-    logger.debug(`[AI] Decision: ${decision.action} ${decision.asset} conf=${decision.confidence}`);
+    logger.debug(
+      `[AI] Decision: ${decision.action} ${decision.asset} conf=${decision.confidence}`,
+    );
 
     const riskInput = {
       entryPrice: decision.entryPrice,
-      direction: (decision.action === 'buy' ? 'buy' : 'sell') as 'buy' | 'sell',
+      direction: (decision.action === "buy" ? "buy" : "sell") as "buy" | "sell",
       pair: decision.asset,
       availableBalance: portfolioValue,
       aiStopLossPct: decision.stopLossPct,
@@ -49,7 +55,7 @@ export async function getAITrades(snapshots: AssetSnapshot[], portfolioValue: nu
 
     trades.push({
       pair: decision.asset,
-      direction: decision.action === 'buy' ? 'buy' : 'sell',
+      direction: decision.action === "buy" ? "buy" : "sell",
       entryPrice: decision.entryPrice,
       volume: riskOutput.volume,
       stopLoss: riskOutput.stopLoss,

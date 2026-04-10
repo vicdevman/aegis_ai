@@ -19,7 +19,7 @@ async function sampleDecision(prompt: string, seed: number): Promise<AIDecision[
       response_format: { type: 'json_object' }
     });
     const content = response.choices[0]?.message?.content || '{}';
-    logger.debug(`[AI] Sample raw: ${content.substring(0, 200)}`);
+    logger.debug(`[AI] Sample raw: ${content}`);
     const parsed = JSON.parse(content);
     let decisions = [];
     if (Array.isArray(parsed)) decisions = parsed;
