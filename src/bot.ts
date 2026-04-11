@@ -64,9 +64,9 @@ const TRADING_PAIRS = [
   { symbol: "XBTUSD", assetClass: "crypto" },
   { symbol: "ETHUSD", assetClass: "crypto" },
   { symbol: "SOLUSD", assetClass: "crypto" },
-  {sysmbol: "PEPEUSD", assetClass: "crypto"},
-  {sysmbol: "ENAUSD", assetClass: "crypto"},
-  {sysmbol: "BONZOUSD", assetClass: "crypto"},
+  { symbol: "PEPEUSD", assetClass: "crypto" },
+  { symbol: "ENAUSD", assetClass: "crypto" },
+  { symbol: "BONZOUSD", assetClass: "crypto" },
   // { symbol: "AAPLx/USD", assetClass: "tokenized_asset" },  // uncomment if available
   // { symbol: "NVDAx/USD", assetClass: "tokenized_asset" },
 ];
