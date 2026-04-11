@@ -26,11 +26,12 @@ export const botRouter = Router();
 function getUsdTotal(balances: Awaited<ReturnType<typeof getBalance>>): number {
   const usd = balances.balances?.USD;
   const zusd = balances.balances?.ZUSD;
+  
   const raw =
-    (typeof usd === "string" ? usd : usd?.total) ??
-    (typeof zusd === "string" ? zusd : zusd?.total) ??
+    (typeof usd === "object" ? usd.total : usd) ??
+    (typeof zusd === "object" ? zusd.total : zusd) ??
     0;
-  return typeof raw === "number" ? raw : parseFloat(raw);
+  return typeof raw === "number" ? raw : parseFloat(raw as string);
 }
 
 // ── GET /api/status ───────────────────────────────────────────

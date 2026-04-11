@@ -39,6 +39,7 @@ import { botRouter } from "./api/routes/bot.js";
 import { logger } from "./utils/logger.js";
 import { getAITrades } from "./ai/index.js";
 import type { AssetSnapshot } from "./ai/types.js";
+import type { Position } from "./types/index.js";
 import {
   computeRSI,
   computeATRPercent,
@@ -72,11 +73,11 @@ const volumeHistory = new Map<string, number[]>();
 const VOLUME_HISTORY_LEN = 20;
 
 async function buildSnapshots(): Promise<AssetSnapshot[]> {
-  const activePositions = await getActivePositions();
+  const activePositionsRaw = await getActivePositions();
   const openPairs = new Set(
-    activePositions
-      .filter((p) => p.status === "open")
-      .map((p) => p.pair),
+    activePositionsRaw
+      .filter((p: Position) => p.status === "open")
+      .map((p: Position) => p.pair),
   );
   const snapshots = [];
   for (const pair of TRADING_PAIRS) {
