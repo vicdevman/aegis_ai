@@ -1,10 +1,51 @@
 import type { RiskInput, RiskOutput } from "../../types/index.js";
 import { config } from "../../config/env.js";
 import { logger } from "../../utils/logger.js";
+import { PositionModel } from "../../db/models/Position.js";
 
 let dailyPnL = 0;
 
+function todayKey(d: Date = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+let dailyPnLKey = todayKey();
+
+function ensureDailyPnLIsToday(): void {
+  const key = todayKey();
+  if (key !== dailyPnLKey) {
+    dailyPnLKey = key;
+    dailyPnL = 0;
+    logger.info("[Risk] New day detected. Daily PnL reset.");
+  }
+}
+
+export async function initDailyPnL(): Promise<void> {
+  ensureDailyPnLIsToday();
+
+  if (config.devMode) return;
+
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const closedToday = await PositionModel.find({
+    status: "closed",
+    closedAt: { $gte: startOfDay },
+  })
+    .select({ pnl: 1 })
+    .lean();
+
+  const sum = (closedToday as Array<{ pnl?: unknown }>).reduce(
+    (acc: number, p: { pnl?: unknown }) =>
+      acc + (typeof p.pnl === "number" ? p.pnl : 0),
+    0,
+  );
+  dailyPnL = sum;
+  logger.info(`[Risk] Daily PnL initialized from DB: $${dailyPnL.toFixed(2)}`);
+}
+
 export function recordPnL(pnl: number): void {
+  ensureDailyPnLIsToday();
   dailyPnL += pnl;
   logger.info(`[Risk] Daily PnL: $${dailyPnL.toFixed(2)}`);
 }

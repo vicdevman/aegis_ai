@@ -28,7 +28,7 @@ import {
   updateHistory,
 } from "./modules/market/index.js";
 import { getStrategy } from "./modules/strategy/loader.js";
-import { calculateRisk } from "./modules/risk/index.js";
+import { calculateRisk, initDailyPnL } from "./modules/risk/index.js";
 import {
   openPosition,
   recoverOpenPositions,
@@ -64,6 +64,9 @@ const TRADING_PAIRS = [
   { symbol: "XBTUSD", assetClass: "crypto" },
   { symbol: "ETHUSD", assetClass: "crypto" },
   { symbol: "SOLUSD", assetClass: "crypto" },
+  {sysmbol: "PEPEUSD", assetClass: "crypto"},
+  {sysmbol: "ENAUSD", assetClass: "crypto"},
+  {sysmbol: "BONZOUSD", assetClass: "crypto"},
   // { symbol: "AAPLx/USD", assetClass: "tokenized_asset" },  // uncomment if available
   // { symbol: "NVDAx/USD", assetClass: "tokenized_asset" },
 ];
@@ -150,6 +153,8 @@ async function main(): Promise<void> {
 
   // ── 2. MongoDB ──────────────────────────────────────────────
   await connectDB();
+
+  await initDailyPnL();
 
   // Seed price history with current prices
   async function seedPriceHistory() {
