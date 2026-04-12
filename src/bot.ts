@@ -35,6 +35,7 @@ import {
 } from "./modules/position/index.js";
 import { botState } from "./modules/state/index.js";
 import { botRouter } from "./api/routes/bot.js";
+import onchainRouter from "./api/routes/onchain.js";
 import { logger } from "./utils/logger.js";
 import { getAITrades } from "./ai/index.js";
 import type { AssetSnapshot } from "./ai/types.js";
@@ -180,6 +181,7 @@ async function main(): Promise<void> {
   app.use(cors({ origin: config.frontendUrl, credentials: true }));
   app.use(express.json());
   app.use("/api", botRouter);
+  app.use("/api/onchain", onchainRouter);
   app.get("/", (_req, res) => res.json({ ok: true, uptime: process.uptime() }));
 
   const httpServer = createServer(app);

@@ -131,14 +131,3 @@ botRouter.get("/portfolio", async (_req: Request, res: Response) => {
   }
 });
 
-// ── GET /api/onchain/intents ──────────────────────────────────
-botRouter.get("/onchain/intents", async (_req: Request, res: Response) => {
-  const { getTradeIntents } = await import("../../modules/onchain/index.js");
-  res.json(getTradeIntents());
-});
-
-// ── GET /api/onchain/artifacts ────────────────────────────────
-botRouter.get("/onchain/artifacts", async (_req: Request, res: Response) => {
-  const { getValidationArtifacts } = await import("../../modules/onchain/index.js");
-  res.json(getValidationArtifacts());
-});
