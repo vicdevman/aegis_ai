@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { logger } from '../../utils/logger.js';
 import { publicClient, AGENT_ID, AGENT_WALLET } from '../../blockchain/erc8004.js';
-import { formatEther } from 'viem';
 
 const router = Router();
 
@@ -40,37 +39,38 @@ const reputationRegistryAbi = [
   }
 ] as const;
 
-type AgentResultTuple = readonly [
-  `0x${string}`,
-  `0x${string}`,
-  string,
-  string,
-  readonly string[],
-  bigint,
-  boolean,
-];
-
-function parseAgent(agent: AgentResultTuple) {
-  const [operatorWallet, agentWallet, name, description, capabilities, registeredAt, active] = agent;
-  return {
-    operatorWallet,
-    agentWallet,
-    name,
-    description,
-    capabilities,
-    registeredAt,
-    active,
-  };
+// Helper: fetch logs in chunks to avoid block range limit
+async function fetchLogsInChunks(address: `0x${string}`, event: any, args: any, fromBlock: bigint, toBlock: bigint, chunkSize = 50000n) {
+  const allLogs: any[] = [];
+  let currentFrom = fromBlock;
+  
+  while (currentFrom <= toBlock) {
+    const currentTo = currentFrom + chunkSize - 1n > toBlock ? toBlock : currentFrom + chunkSize - 1n;
+    try {
+      const logs = await publicClient.getLogs({
+        address,
+        event,
+        args,
+        fromBlock: currentFrom,
+        toBlock: currentTo,
+      });
+      allLogs.push(...logs);
+    } catch (err) {
+      logger.warn(`[Onchain] Log fetch failed for blocks ${currentFrom}-${currentTo}: ${err}`);
+    }
+    currentFrom = currentTo + 1n;
+  }
+  return allLogs;
 }
 
-// Helper to get recent TradeApproved events from RiskRouter
+// Helper: get recent TradeApproved events (last 50k blocks, paginated)
 async function getRecentTrades(limit = 20) {
-  const fromBlock = 0n; // or start from agent registration block
   const toBlock = await publicClient.getBlockNumber();
+  const fromBlock = toBlock > 50000n ? toBlock - 50000n : 0n;
   
-  const logs = await publicClient.getLogs({
-    address: RISK_ROUTER,
-    event: {
+  const logs = await fetchLogsInChunks(
+    RISK_ROUTER as `0x${string}`,
+    {
       type: 'event',
       name: 'TradeApproved',
       inputs: [
@@ -79,22 +79,22 @@ async function getRecentTrades(limit = 20) {
         { name: 'amountUsdScaled', type: 'uint256', indexed: false }
       ]
     },
-    args: { agentId: AGENT_ID },
+    { agentId: AGENT_ID },
     fromBlock,
     toBlock
-  });
+  );
   
   return logs.slice(-limit).reverse();
 }
 
-// Helper to get recent ValidationAttestation events
+// Helper: get recent ValidationAttestation events (EIP-712 version)
 async function getRecentAttestations(limit = 20) {
-  const fromBlock = 0n;
   const toBlock = await publicClient.getBlockNumber();
+  const fromBlock = toBlock > 50000n ? toBlock - 50000n : 0n;
   
-  const logs = await publicClient.getLogs({
-    address: VALIDATION_REGISTRY,
-    event: {
+  const logs = await fetchLogsInChunks(
+    VALIDATION_REGISTRY as `0x${string}`,
+    {
       type: 'event',
       name: 'ValidationAttestation',
       inputs: [
@@ -104,10 +104,10 @@ async function getRecentAttestations(limit = 20) {
         { name: 'attestor', type: 'address', indexed: false }
       ]
     },
-    args: { agentId: AGENT_ID },
+    { agentId: AGENT_ID },
     fromBlock,
     toBlock
-  });
+  );
   
   return logs.slice(-limit).reverse();
 }
@@ -115,18 +115,28 @@ async function getRecentAttestations(limit = 20) {
 // GET /api/onchain/agent - Get agent details
 router.get('/agent', async (req, res) => {
   try {
-    const agent = await publicClient.readContract({
+    const result = await publicClient.readContract({
       address: AGENT_REGISTRY,
       abi: agentRegistryAbi,
       functionName: 'getAgent',
       args: [AGENT_ID]
-    }) as AgentResultTuple;
-    const parsed = parseAgent(agent);
+    });
+    
+    // Destructure safely, handle BigInt
+    const [operatorWallet, agentWallet, name, description, capabilities, registeredAtBigInt, active] = result as any;
+    const registeredAt = Number(registeredAtBigInt); // Convert BigInt to number (fits within 2^53 for timestamps up to year 3000)
     
     res.json({
       agentId: AGENT_ID.toString(),
-      ...parsed,
-      registeredAt: new Date(Number(parsed.registeredAt) * 1000).toISOString(),
+      operatorWallet,
+      agentWallet,
+      name,
+      description,
+      capabilities,
+      registeredAt: new Date(registeredAt * 1000).toISOString(),
+      registeredAtTimestamp: registeredAt,
+      active,
+      contractAddress: AGENT_REGISTRY,
       explorerUrl: `https://sepolia.etherscan.io/address/${AGENT_REGISTRY}#readContract`
     });
   } catch (err) {
@@ -135,7 +145,7 @@ router.get('/agent', async (req, res) => {
   }
 });
 
-// GET /api/onchain/reputation - Get reputation score
+// GET /api/onchain/reputation
 router.get('/reputation', async (req, res) => {
   try {
     const score = await publicClient.readContract({
@@ -143,7 +153,7 @@ router.get('/reputation', async (req, res) => {
       abi: reputationRegistryAbi,
       functionName: 'getAverageScore',
       args: [AGENT_ID]
-    });
+    }) as bigint;
     
     res.json({
       agentId: AGENT_ID.toString(),
@@ -157,7 +167,7 @@ router.get('/reputation', async (req, res) => {
   }
 });
 
-// GET /api/onchain/trades - Get recent trade intents
+// GET /api/onchain/trades
 router.get('/trades', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit as string) || 20;
@@ -183,7 +193,7 @@ router.get('/trades', async (req, res) => {
   }
 });
 
-// GET /api/onchain/attestations - Get recent validation attestations
+// GET /api/onchain/attestations
 router.get('/attestations', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit as string) || 20;
@@ -209,10 +219,10 @@ router.get('/attestations', async (req, res) => {
   }
 });
 
-// GET /api/onchain/summary - All agent data in one call
+// GET /api/onchain/summary
 router.get('/summary', async (req, res) => {
   try {
-    const [agent, reputation, trades, attestations] = await Promise.all([
+    const [agentResult, reputation, trades, attestations] = await Promise.all([
       publicClient.readContract({
         address: AGENT_REGISTRY,
         abi: agentRegistryAbi,
@@ -224,29 +234,26 @@ router.get('/summary', async (req, res) => {
         abi: reputationRegistryAbi,
         functionName: 'getAverageScore',
         args: [AGENT_ID]
-      }).catch(() => null),
+      }).catch(() => null) as Promise<bigint | null>,
       getRecentTrades(10),
       getRecentAttestations(10)
     ]);
     
+    const agent = agentResult ? {
+      name: (agentResult as any)[2],
+      description: (agentResult as any)[3],
+      capabilities: (agentResult as any)[4],
+      registeredAt: new Date(Number((agentResult as any)[5]) * 1000).toISOString(),
+      active: (agentResult as any)[6],
+      operatorWallet: (agentResult as any)[0],
+      agentWallet: (agentResult as any)[1],
+      explorerUrl: `https://sepolia.etherscan.io/address/${AGENT_REGISTRY}#readContract`
+    } : null;
+    
     res.json({
       agentId: AGENT_ID.toString(),
       agentWallet: AGENT_WALLET,
-      agentDetails: agent
-        ? (() => {
-            const parsed = parseAgent(agent as AgentResultTuple);
-            return {
-              name: parsed.name,
-              description: parsed.description,
-              capabilities: parsed.capabilities,
-              registeredAt: new Date(Number(parsed.registeredAt) * 1000).toISOString(),
-              active: parsed.active,
-              operatorWallet: parsed.operatorWallet,
-              agentWallet: parsed.agentWallet,
-              explorerUrl: `https://sepolia.etherscan.io/address/${AGENT_REGISTRY}#readContract`,
-            };
-          })()
-        : null,
+      agentDetails: agent,
       reputationScore: reputation ? Number(reputation) : 0,
       recentTrades: trades.map(log => ({
         txHash: log.transactionHash,
