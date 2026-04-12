@@ -9,7 +9,6 @@
  *  5. Crash recovery — restore open positions from DB
  *  6. Main trading loop (every 1 min, only runs when bot is started)
  */
-
 import express from "express";
 import cors from "cors";
 import { createServer } from "http";
@@ -47,6 +46,8 @@ import {
 } from "./modules/market/index.js";
 import {
   submitTradeIntent,
+  createCheckpointHash,
+  postAttestation,
   publicClient,
   AGENT_WALLET,
 } from "./blockchain/erc8004.js";
@@ -395,6 +396,40 @@ async function main(): Promise<void> {
           takeProfit: trade.takeProfit,
           breakEvenTrigger: trade.breakEvenTrigger,
         };
+
+        // After successful submitTradeIntent
+        if (txHash) {
+          // Create checkpoint hash for this trade
+          let stopLossPct: number, takeProfitPct: number;
+          if (trade.direction === "buy") {
+            stopLossPct =
+              (trade.entryPrice - trade.stopLoss) / trade.entryPrice;
+            takeProfitPct =
+              (trade.takeProfit - trade.entryPrice) / trade.entryPrice;
+          } else {
+            // For sell trades (if you ever use them)
+            stopLossPct =
+              (trade.stopLoss - trade.entryPrice) / trade.entryPrice;
+            takeProfitPct =
+              (trade.entryPrice - trade.takeProfit) / trade.entryPrice;
+          }
+
+          const checkpointHash = createCheckpointHash({
+            pair: trade.pair,
+            action: trade.direction === "buy" ? "BUY" : "SELL",
+            entryPrice: trade.entryPrice,
+            stopLossPct, // convert price to %
+            takeProfitPct,
+            reasoning: trade.reasoning,
+            timestamp: Date.now(),
+          });
+
+          // Score = confidence * 100 (0-100)
+          const score = Math.min(Math.floor(trade.confidence * 100), 100);
+
+          // Post attestation to ValidationRegistry
+          await postAttestation(checkpointHash, score, trade.reasoning);
+        }
 
         await openPosition({
           pair: trade.pair,

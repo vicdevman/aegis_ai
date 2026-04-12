@@ -254,3 +254,59 @@ export async function submitTradeIntent(
   logger.info(`[ERC8004] Trade intent submitted: ${hash}`);
   return hash;
 }
+
+// ================================
+// 5. Validation attestation (ERC‑8004 reputation)
+// ================================
+const validationAbi = [
+  {
+    type: 'function',
+    name: 'postEIP712Attestation',
+    inputs: [
+      { name: 'agentId', type: 'uint256' },
+      { name: 'checkpointHash', type: 'bytes32' },
+      { name: 'score', type: 'uint8' },
+      { name: 'notes', type: 'string' }
+    ],
+    outputs: [],
+    stateMutability: 'nonpayable'
+  }
+] as const;
+
+export function createCheckpointHash(trade: {
+  pair: string;
+  action: string;
+  entryPrice: number;
+  stopLossPct: number;
+  takeProfitPct: number;
+  reasoning: string;
+  timestamp: number;
+}): `0x${string}` {
+  const checkpointData = {
+    agentId: AGENT_ID.toString(),
+    ...trade
+  };
+  return keccak256(toBytes(JSON.stringify(checkpointData)));
+}
+
+export async function postAttestation(
+  checkpointHash: `0x${string}`,
+  score: number,  // 0-100
+  notes: string
+) {
+  try {
+    const { request } = await publicClient.simulateContract({
+      address: VALIDATION_REGISTRY,
+      abi: validationAbi,
+      functionName: 'postEIP712Attestation',
+      args: [AGENT_ID, checkpointHash, score, notes],
+      account,
+    });
+    const hash = await walletClient.writeContract(request);
+    logger.info(`[ERC8004] Attestation posted: ${hash}`);
+    return hash;
+  } catch (err) {
+    logger.error(`[ERC8004] Attestation failed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
