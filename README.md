@@ -1,4 +1,4 @@
-# Aegis AI — Trustless AI trading Agent
+# Aegis AI | Trustless AI trading Agent
 
 Aegis AI is a Node.js/TypeScript trading engine that combines:
 
