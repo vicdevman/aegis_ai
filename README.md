@@ -1,4 +1,4 @@
-# Aegis AI — AI-Assisted Trading Engine with On-Chain Risk Gating
+# Aegis AI — Trustless AI trading Agent
 
 Aegis AI is a Node.js/TypeScript trading engine that combines:
 
